@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#f5f3ee" />
+    <title>Namaste Payment Ritual | Use-Me-Not</title>
+    <style>
+      :root { color-scheme: light; --paper:#f5f3ee; --ink:#24231f; --line:#d9d6ce; --olive:#60644c; --muted:#79766e; --mono:ui-monospace,SFMono-Regular,Menlo,monospace; --serif:Georgia,serif; }
+      * { box-sizing:border-box; }
+      body { margin:0; min-height:100vh; display:grid; place-items:center; padding:24px; background:var(--paper); color:var(--ink); font-family:Arial,sans-serif; }
+      main { width:min(100%,620px); padding:30px; border:1px solid var(--line); background:#fbfaf7; }
+      .eyebrow { color:var(--muted); font:10px var(--mono); letter-spacing:.12em; text-transform:uppercase; }
+      h1 { margin:14px 0 10px; font:500 clamp(36px,7vw,58px)/1.02 var(--serif); letter-spacing:-.05em; }
+      p { color:var(--muted); font:13px/1.7 var(--mono); }
+      .camera { position:relative; display:grid; place-items:center; overflow:hidden; min-height:300px; margin:22px 0 14px; background:#191a16; }
+      canvas { width:100%; max-height:430px; aspect-ratio:4/3; object-fit:cover; transform:scaleX(-1); display:block; }
+      .source { position:absolute; width:1px; height:1px; opacity:0; pointer-events:none; }
+      .placeholder { position:absolute; display:grid; justify-items:center; gap:12px; color:#d8d5c9; text-align:center; font:9px var(--mono); letter-spacing:.1em; }
+      .placeholder b { font-size:52px; }
+      #status { position:absolute; right:12px; bottom:12px; left:12px; padding:10px 12px; background:#000b; color:white; font:11px/1.5 var(--mono); }
+      .progress { height:3px; background:#dfddd4; }
+      .progress i { display:block; width:0; height:100%; background:var(--olive); transition:width .12s linear; }
+      .buttons { display:flex; flex-wrap:wrap; gap:10px; margin-top:18px; }
+      button { min-height:44px; padding:0 16px; border:1px solid var(--ink); background:var(--ink); color:white; font-weight:600; cursor:pointer; }
+      button.secondary { background:transparent; color:var(--ink); }
+      button:disabled { opacity:.5; cursor:wait; }
+      .fine { margin-top:20px; padding-top:14px; border-top:1px solid var(--line); font-size:9px; }
+      .success { color:#4e6040!important; }
+      @media(max-width:520px) { main { padding:20px; } .camera { min-height:220px; } }
+    </style>
+  </head>
+  <body>
+    <main>
+      <span class="eyebrow">Use-Me-Not / ceremonial checkout</span>
+      <h1>Pay with <i>Namaste.</i></h1>
+      <p>Hold both palms together in front of the camera for a moment. The gesture is a joke, not a real payment.</p>
+      <div class="camera">
+        <video id="camera" class="source" autoplay playsinline muted></video>
+        <canvas id="preview" aria-label="Live camera preview with a local face-bulge effect"></canvas>
+        <div class="placeholder" id="placeholder"><b aria-hidden="true">🙏</b><span>CAMERA IS OFF UNTIL YOU CHOOSE TO START</span></div>
+        <div id="status" role="status">No camera is active.</div>
+      </div>
+      <div class="progress" aria-label="Namaste hold progress"><i id="progress"></i></div>
+      <div class="buttons">
+        <button id="start">Open camera and do Namaste</button>
+        <button id="stop" class="secondary" hidden>Stop camera</button>
+      </div>
+      <p class="fine">The camera preview is processed on this device. No video is recorded or uploaded. This standalone demo does not charge money or place a store order.</p>
+    </main>
+    <script type="module">
+      const video = document.querySelector("#camera");
+      const canvas = document.querySelector("#preview");
+      const context = canvas.getContext("2d");
+      const status = document.querySelector("#status");
+      const progress = document.querySelector("#progress");
+      const placeholder = document.querySelector("#placeholder");
+      const start = document.querySelector("#start");
+      const stop = document.querySelector("#stop");
+      let stream = null;
+      let detector = null;
+      let faceDetector = null;
+      let frame = 0;
+      let lastFaceAt = 0;
+      let facePoints = null;
+      let holdStarted = null;
+      let complete = false;
+
+      const distance = (a,b) => Math.hypot(a.x-b.x,a.y-b.y);
+      function drawBulge(points,width,height) {
+        if (!points?.length) return;
+        const xs=points.map(p=>p.x*width), ys=points.map(p=>p.y*height);
+        const cx=(Math.min(...xs)+Math.max(...xs))/2, cy=(Math.min(...ys)+Math.max(...ys))/2;
+        const rx=Math.max(24,(Math.max(...xs)-Math.min(...xs))*.62), ry=Math.max(30,(Math.max(...ys)-Math.min(...ys))*.68), zoom=1.55;
+        context.save(); context.beginPath(); context.ellipse(cx,cy,rx,ry,0,0,Math.PI*2); context.clip();
+        context.drawImage(video,cx-rx/zoom,cy-ry/zoom,2*rx/zoom,2*ry/zoom,cx-rx,cy-ry,2*rx,2*ry); context.restore();
+        context.save(); context.beginPath(); context.ellipse(cx,cy,rx,ry,0,0,Math.PI*2); context.strokeStyle="rgba(245,243,238,.9)"; context.lineWidth=Math.max(2,width/320); context.stroke(); context.restore();
+      }
+      function isNamaste(hands) {
+        if (!hands || hands.length < 2) return false;
+        const [a,b] = hands;
+        const upright = hand => [8,12,16,20].every(tip => hand[tip].y < hand[9].y + .035);
+        return upright(a) && upright(b) && distance(a[0],b[0]) < .36 && distance(a[9],b[9]) < .2 && distance(a[5],b[5]) < .22 && distance(a[12],b[12]) < .24;
+      }
+      function stopCamera() {
+        cancelAnimationFrame(frame);
+        frame = 0;
+        stream?.getTracks().forEach(track => track.stop());
+        stream = null;
+        detector?.close();
+        faceDetector?.close();
+        detector = null;
+        faceDetector = null;
+        video.srcObject = null;
+        stop.hidden = true;
+        start.hidden = false;
+        placeholder.hidden = false;
+      }
+      async function begin() {
+        start.disabled = true;
+        status.textContent = "Requesting camera permission…";
+        try {
+          if (!navigator.mediaDevices?.getUserMedia) throw new Error("This browser cannot open a camera.");
+          stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:"user", width:{ideal:640}, height:{ideal:480} }, audio:false });
+          video.srcObject = stream;
+          await video.play();
+          const previewWidth=Math.min(640,video.videoWidth), previewHeight=Math.round(previewWidth*video.videoHeight/video.videoWidth);
+          canvas.width=previewWidth; canvas.height=previewHeight; context.drawImage(video,0,0,previewWidth,previewHeight);
+          placeholder.hidden = true;
+          status.textContent = "Loading the palm-reading apparatus…";
+          const { FilesetResolver, FaceLandmarker, HandLandmarker } = await import("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0");
+          const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0/wasm");
+          detector = await HandLandmarker.createFromOptions(vision, {
+            baseOptions:{ modelAssetPath:"https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task", delegate:"GPU" },
+            runningMode:"VIDEO", numHands:2,
+          });
+          try {
+            faceDetector = await FaceLandmarker.createFromOptions(vision, {
+              baseOptions:{ modelAssetPath:"https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task", delegate:"GPU" },
+              runningMode:"VIDEO", numFaces:1,
+            });
+          } catch { status.textContent="Namaste detector ready. Face-bulge filter unavailable."; }
+          start.hidden = true;
+          stop.hidden = false;
+          status.textContent = "Bring both palms together and hold your Namaste.";
+          const predict = () => {
+            if (!detector || complete) return;
+            if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+              const width=Math.min(640,video.videoWidth), height=Math.round(width*video.videoHeight/video.videoWidth), now=performance.now();
+              if(canvas.width!==width||canvas.height!==height){canvas.width=width;canvas.height=height;}
+              context.drawImage(video,0,0,width,height);
+              if(faceDetector && now-lastFaceAt>100){lastFaceAt=now;facePoints=faceDetector.detectForVideo(video,now).faceLandmarks[0]||null;}
+              drawBulge(facePoints,width,height);
+              const result = detector.detectForVideo(video, now);
+              if (isNamaste(result.landmarks)) {
+                holdStarted ??= performance.now();
+                const value = Math.min(1,(performance.now()-holdStarted)/1300);
+                progress.style.width = `${value*100}%`;
+                status.textContent = "Namaste detected. Keep holding…";
+                if (value >= 1) {
+                  complete = true;
+                  stopCamera();
+                  status.textContent = "Namaste accepted. No payment was taken.";
+                  status.classList.add("success");
+                  return;
+                }
+              } else {
+                holdStarted = null;
+                progress.style.width = "0%";
+                status.textContent = "Place both palms together in front of the camera.";
+              }
+            }
+            frame = requestAnimationFrame(predict);
+          };
+          frame = requestAnimationFrame(predict);
+        } catch (error) {
+          stopCamera();
+          status.textContent = `${error instanceof Error ? error.message : "Camera setup failed."} No payment was taken.`;
+        } finally {
+          start.disabled = false;
+        }
+      }
+      start.addEventListener("click", begin);
+      stop.addEventListener("click", () => { stopCamera(); status.textContent = "Camera stopped."; });
+      window.addEventListener("pagehide", stopCamera);
+    </script>
+  </body>
+</html>
